@@ -1,9 +1,12 @@
 #include <arrow/array.h>
 #include <arrow/array/builder_primitive.h>
 #include <arrow/c/abi.h>
+#include <iostream>
 #include <arrow/c/bridge.h>
 #include <arrow/result.h>
 #include <pybind11/pybind11.h>
+#include <arrow/api.h>
+#include <arrow/array/builder_dict.h>
 
 #include <memory>
 
@@ -34,6 +37,22 @@ std::shared_ptr<arrow::Array> from_pyarrow(const pybind11::handle& array) {
   throw_not_ok(maybe_arr.status());
 
   return maybe_arr.MoveValueUnsafe();
+}
+
+pybind11::object to_pyarrow(const arrow::RecordBatch& batch)
+{
+  ArrowArray c_data_batch;
+  ArrowSchema c_data_schema;
+
+  auto a = arrow::ExportRecordBatch(batch, &c_data_batch, &c_data_schema);
+  pybind11::module pyarrow = pybind11::module::import("pyarrow");
+  pybind11::object pa_batch_cls = pyarrow.attr("RecordBatch");
+  auto import_fn = pa_batch_cls.attr("_import_from_c");
+
+  intptr_t c_data_batch_ptr = reinterpret_cast<intptr_t>(&c_data_batch);
+  intptr_t c_data_schema_ptr = reinterpret_cast<intptr_t>(&c_data_schema);
+
+  return import_fn(c_data_batch_ptr, c_data_schema_ptr);
 }
 
 pybind11::object to_pyarrow(const arrow::Array& array) {
@@ -74,8 +93,30 @@ pybind11::object run_udf(const pybind11::handle& array) {
   return to_pyarrow(*doubled_array);
 }
 
+
+pybind11::object get_batch(std::size_t num=3){
+  std::vector<std::shared_ptr<arrow::Array>> arrays;
+  std::vector<std::shared_ptr<arrow::Field>> fiels;
+  arrow::DoubleBuilder builder = arrow::DoubleBuilder();
+  for( int i =0; i < num; i++){
+    std::vector<double> dblvals = {1.1, 1.1, 2.3};
+    throw_not_ok(builder.AppendValues(dblvals));
+    arrow::Result<std::shared_ptr<arrow::Array>> doubled = builder.Finish();
+    throw_not_ok(doubled.status());
+    arrays.push_back(doubled.MoveValueUnsafe());
+    fiels.push_back(arrow::field("test " + std::to_string(i), arrow::float64()));
+    builder.Reset();
+  }
+
+  auto resutl = arrow::RecordBatch::Make(arrow::schema(fiels), 3,  arrays);
+  auto data = to_pyarrow(*resutl);
+  return data;
+}
+
 PYBIND11_MODULE(MyModule, m) {
   m.doc() = "An example module";
   m.def("run_udf", &run_udf,
         "A function that does some transformation of a pyarrow array");
+  m.def("batch", &get_batch,
+        "Create table with n columns ");
 }
